@@ -1,0 +1,30 @@
+{
+  "name": "ref-match",
+  "author": "Brian Barrow",
+  "version": "0.0.1",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Ref Match",
+    "uuid": "6f5f7c57-ac6b-41b2-b67c-4954450fb9fa",
+    "projectType": "moddable",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "emery",
+      "gabbro"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "chunk",
+      "index",
+      "total"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}

@@ -1,0 +1,16 @@
+# Pebble build output (.pbw, .elf, .bin, Moddable mods, resource packs)
+build/
+
+# waf lock files — contain absolute paths from the machine that built
+.lock-waf_*
+.waf-*
+.waf3-*
+
+# Node dependencies, if any get added
+node_modules/
+
+# Editor / OS noise
+.DS_Store
+._*
+*.swp
+*~

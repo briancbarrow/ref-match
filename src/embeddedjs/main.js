@@ -1,0 +1,850 @@
+// Ref Match — on-wrist match control.
+//
+// Navigation is a screen stack. Each screen owns the button recognizers it
+// needs, and installing a screen swaps them: that is how SELECT can mean
+// "pause" on the clock and "confirm" in a picker without a mode flag.
+//
+// The clock never stops for data entry. Pickers push modally on top of the
+// clock screen; the tick keeps running underneath them the whole time.
+
+import Button from "pebble/button";
+import Vibes from "pebble/vibes";
+import Message from "pebble/message";
+import * as M from "match";
+import { drawClock, drawList, drawNumber, drawPanel } from "ui";
+
+// --- Button sets ----------------------------------------------------------
+
+// BACK cannot be long-pressed on this firmware: the button module rejects a
+// long recognizer on BACK outright ("no long back"), and a raw subscription on
+// BACK is remapped to a synthesised single click, so there is no hold to
+// measure. The design's "hold BACK to end the period" is therefore a plain
+// press into a confirm screen — BACK has no other job here, the confirm is
+// what guards against a mis-press, and it defaults to No. Claiming BACK at all
+// is also what stops a stray press dropping out of the app mid-match.
+const CLOCK_KEYS = [
+	{ types: ["up", "down", "select", "back"], single: true },
+	{ types: ["select"], long: { delay: 500 } }
+];
+
+const LIST_KEYS = [
+	{ types: ["up", "down", "select", "back"], single: true }
+];
+
+const NUMBER_KEYS = [
+	// repeat: holding runs 0-99 at speed rather than asking for 99 presses.
+	{ types: ["up", "down"], single: { repeat: 100 } },
+	{ types: ["select", "back"], single: true }
+];
+
+let installed = [];
+
+function installButtons(specs) {
+	for (const button of installed) {
+		try {
+			button.close();
+		}
+		catch {
+		}
+	}
+	installed = specs.map(spec => new Button({ ...spec, onPush: dispatch }));
+}
+
+function dispatch(pushed, which, recognizer) {
+	if (!pushed)
+		return;
+	current().onPress?.(which, recognizer);
+}
+
+// --- Screen stack ---------------------------------------------------------
+
+const stack = [];
+let lastFrame = "";
+let pending;
+
+function current() {
+	return stack[stack.length - 1];
+}
+
+// Screen changes are deferred by a tick rather than applied inside the button
+// handler. Creating a Button re-installs the window's click config provider,
+// which re-arms the recognizers; do that while a click is still in flight and
+// the release lands on the screen that just appeared. That is how confirming a
+// scorer with SELECT used to arrive at the clock as a second SELECT and pause
+// the match.
+function applyPending() {
+	if (!pending)
+		return;
+	const change = pending;
+	pending = undefined;
+	change();
+	installButtons(current().keys);
+	lastFrame = "";
+	draw();
+}
+
+function schedule(change) {
+	// Two transitions in one event would drop the first; apply it and move on.
+	if (pending)
+		applyPending();
+	pending = change;
+	setTimeout(applyPending, 0);
+}
+
+function show(screen) {
+	schedule(() => {
+		stack.length = 0;
+		stack.push(screen);
+	});
+}
+
+function push(screen) {
+	schedule(() => stack.push(screen));
+}
+
+function pop() {
+	schedule(() => {
+		if (stack.length > 1)
+			stack.pop();
+	});
+}
+
+// Redraws are skipped when nothing visible changed. At one tick a second for
+// ninety minutes that is most of the frames, and each one is a full repaint.
+function draw() {
+	const screen = current();
+	if (!screen)
+		return;
+	const frame = screen.signature();
+	if (frame === lastFrame)
+		return;
+	lastFrame = frame;
+	screen.draw();
+}
+
+// --- Transient notices ----------------------------------------------------
+
+let notice = "";
+let noticeUntil = 0;
+
+function setNotice(text, seconds = 6) {
+	notice = text;
+	noticeUntil = Date.now() + seconds * 1000;
+}
+
+function activeNotice() {
+	if (notice && Date.now() > noticeUntil)
+		notice = "";
+	return notice;
+}
+
+// --- Shared text ----------------------------------------------------------
+
+function scoreText() {
+	const [home, away] = M.score();
+	return `${M.TEAM_INITIALS[M.HOME]} ${home} - ${away} ${M.TEAM_INITIALS[M.AWAY]}`;
+}
+
+function binsText() {
+	const active = M.activeSinBins().length;
+	return active ? `BIN ${active}` : "";
+}
+
+// --- Generic screens ------------------------------------------------------
+
+function listScreen(title, items, onSelect, hint, start = 0) {
+	let index = Math.min(Math.max(0, start), Math.max(0, items.length - 1));
+
+	return {
+		keys: LIST_KEYS,
+		signature: () => `list|${title}|${index}|${items.length}`,
+		draw() {
+			drawList(title, items, index, hint);
+		},
+		onPress(which) {
+			switch (which) {
+				case "up":
+					// Wrapping keeps a short list one press away in either
+					// direction, which matters when the referee is not looking.
+					index = index > 0 ? index - 1 : items.length - 1;
+					break;
+				case "down":
+					index = index < items.length - 1 ? index + 1 : 0;
+					break;
+				case "select":
+					onSelect(index);
+					return;
+				case "back":
+					pop();
+					return;
+			}
+			draw();
+		}
+	};
+}
+
+function numberScreen(title, caption, onSelect) {
+	let value = 0;
+
+	return {
+		keys: NUMBER_KEYS,
+		signature: () => `num|${title}|${value}`,
+		draw() {
+			drawNumber(title, `${value}`, caption, "hold UP/DOWN to run");
+		},
+		onPress(which) {
+			switch (which) {
+				case "up":
+					value = value >= 99 ? 0 : value + 1;
+					break;
+				case "down":
+					value = value <= 0 ? 99 : value - 1;
+					break;
+				case "select":
+					onSelect(value);
+					return;
+				case "back":
+					pop();
+					return;
+			}
+			draw();
+		}
+	};
+}
+
+function confirmScreen(title, onYes) {
+	return listScreen(title, ["No", "Yes"], index => {
+		if (1 === index)
+			onYes();
+		else
+			pop();
+	});
+}
+
+// --- Setup ----------------------------------------------------------------
+
+// Values run high to low so UP always means "more", whichever field is showing.
+const SETUP_FIELDS = [
+	{ label: "PERIODS", key: "periods", values: [4, 3, 2, 1], unit: "" },
+	{ label: "PERIOD LENGTH", key: "periodMinutes", values: [45, 40, 35, 30, 25, 20, 15, 10, 5, 1], unit: " min" },
+	{ label: "SIN BIN", key: "sinBinMinutes", values: [15, 10, 8, 5, 2, 0], unit: " min" }
+];
+
+function setupScreen() {
+	let field = 0;
+
+	// A restored config could hold a value that is no longer on its list, which
+	// would leave UP/DOWN dead on that field. Snap each one back onto its list.
+	for (const f of SETUP_FIELDS) {
+		if (f.values.indexOf(M.match.config[f.key]) < 0)
+			M.match.config[f.key] = f.values[Math.floor(f.values.length / 2)];
+	}
+
+	function valueText() {
+		const f = SETUP_FIELDS[field];
+		const value = M.match.config[f.key];
+		if ("sinBinMinutes" === f.key && 0 === value)
+			return "OFF";
+		return `${value}${f.unit}`;
+	}
+
+	return {
+		keys: LIST_KEYS,
+		signature: () => `setup|${field}|${valueText()}`,
+		draw() {
+			drawPanel(SETUP_FIELDS[field].label, valueText(),
+				`step ${field + 1} of ${SETUP_FIELDS.length}`,
+				field < SETUP_FIELDS.length - 1 ? "UP/DOWN change, SEL next" : "UP/DOWN change, SEL start");
+		},
+		onPress(which) {
+			const f = SETUP_FIELDS[field];
+			const at = f.values.indexOf(M.match.config[f.key]);
+
+			switch (which) {
+				case "up":
+					if (at > 0)
+						M.match.config[f.key] = f.values[at - 1];
+					break;
+				case "down":
+					if (at < f.values.length - 1)
+						M.match.config[f.key] = f.values[at + 1];
+					break;
+				case "select":
+					if (field < SETUP_FIELDS.length - 1)
+						field++;
+					else
+						startMatch();
+					return;
+				case "back":
+					if (field > 0)
+						field--;
+					else
+						watch.exit();
+					return;
+			}
+			draw();
+		}
+	};
+}
+
+function startMatch() {
+	M.reset();
+	M.startPeriod();
+	Vibes.shortPulse();
+	console.log(`match started: ${M.match.config.periods} x ${M.match.config.periodMinutes} min`);
+	show(clockScreen());
+}
+
+// --- Clock ----------------------------------------------------------------
+
+function clockScreen() {
+	return {
+		keys: CLOCK_KEYS,
+		signature() {
+			return `clock|${M.match.phase}|${M.match.period}|${M.formatClock(M.remainingInPeriod())}|${scoreText()}|${binsText()}|${activeNotice()}`;
+		},
+		draw() {
+			const remaining = M.remainingInPeriod();
+			const paused = M.PAUSED === M.match.phase;
+			drawClock({
+				period: `P${M.match.period}/${M.match.config.periods}`,
+				score: scoreText(),
+				// Roboto-Bold 49 carries digits and the colon only, so the clock
+				// itself can never show a sign; stoppage reads from the label.
+				clock: M.formatClock(remaining),
+				status: paused ? "PAUSED" : (remaining < 0 ? "STOPPAGE" : "RUNNING"),
+				stoppage: remaining < 0,
+				bins: binsText(),
+				hint: paused ? "SEL resume" : "UP goal  DN card",
+				notice: activeNotice()
+			});
+		},
+		onPress(which, recognizer) {
+			if ("long" === recognizer) {
+				if ("select" === which)
+					push(menuScreen());
+				return;
+			}
+
+			switch (which) {
+				case "up":
+					goalFlow();
+					break;
+				case "down":
+					cardFlow();
+					break;
+				case "back":
+					push(endPeriodConfirm());
+					break;
+				case "select":
+					if (M.RUNNING === M.match.phase)
+						M.pause();
+					else
+						M.resume();
+					Vibes.shortPulse();
+					lastPauseReminder = Date.now();
+					draw();
+					break;
+			}
+		}
+	};
+}
+
+// --- Action menu ----------------------------------------------------------
+
+function menuScreen() {
+	const labels = [];
+	const actions = [];
+
+	function add(label, action) {
+		labels.push(label);
+		actions.push(action);
+	}
+
+	add("Goal", goalFlow);
+	add("Card", cardFlow);
+	add("Substitution", subFlow);
+	if (M.match.config.sinBinMinutes > 0) {
+		add("Sin bin", sinBinFlow);
+		add("Sin bin status", () => push(sinBinStatusScreen()));
+	}
+	add("Undo last", undoAction);
+	add("End period", () => push(endPeriodConfirm()));
+	add("Abandon match", () => push(abandonConfirm()));
+	// The match is on flash after every event, so leaving is safe and the
+	// referee gets the watch back without ending anything.
+	add("Exit (keep match)", () => watch.exit());
+
+	return listScreen("ACTIONS", labels, index => actions[index](), "BACK to clock");
+}
+
+// --- Flows ----------------------------------------------------------------
+//
+// Each step pushes the next picker, so BACK unwinds one decision at a time and
+// the final step drops the whole stack back to the clock.
+
+function toClock(message) {
+	if (message)
+		setNotice(message);
+	show(clockScreen());
+}
+
+function pickTeam(title, next) {
+	push(listScreen(title, M.TEAM_NAMES, team => next(team)));
+}
+
+function pickPlayer(title, team, next) {
+	push(numberScreen(title, M.TEAM_NAMES[team], player => next(player)));
+}
+
+function goalFlow() {
+	pickTeam("GOAL", team => {
+		pickPlayer("SCORER", team, player => {
+			M.addEvent({ type: M.GOAL, team, player });
+			Vibes.shortPulse();
+			const [home, away] = M.score();
+			toClock(`GOAL ${M.TEAM_NAMES[team]} ${home}-${away}`);
+		});
+	});
+}
+
+function cardFlow() {
+	pickTeam("CARD", team => {
+		pickPlayer("PLAYER", team, player => {
+			push(listScreen("CARD", M.CARD_KINDS, kind => {
+				M.addEvent({ type: M.CARD, team, player, kind });
+				Vibes.shortPulse();
+				toClock(`${M.CARD_SHORT[kind]} ${M.TEAM_INITIALS[team]} #${player}`);
+			}));
+		});
+	});
+}
+
+function subFlow() {
+	pickTeam("SUB", team => {
+		pickPlayer("OFF", team, off => {
+			pickPlayer("ON", team, on => {
+				M.addEvent({ type: M.SUB, team, player: off, playerOn: on });
+				Vibes.shortPulse();
+				toClock(`SUB ${M.TEAM_INITIALS[team]} ${off}>${on}`);
+			});
+		});
+	});
+}
+
+const BIN_DURATIONS = [2, 5, 8, 10, 15];
+
+function sinBinFlow() {
+	pickTeam("SIN BIN", team => {
+		pickPlayer("PLAYER", team, player => {
+			const labels = BIN_DURATIONS.map(minutes => `${minutes} min`);
+			const preferred = BIN_DURATIONS.indexOf(M.match.config.sinBinMinutes);
+			push(listScreen("DURATION", labels, index => {
+				const minutes = BIN_DURATIONS[index];
+				const scheduled = M.addSinBin(team, player, minutes);
+				Vibes.shortPulse();
+				toClock(scheduled
+					? `BIN ${M.TEAM_INITIALS[team]} #${player} ${minutes}m`
+					: `BIN #${player} - NO ALARM`);
+			}, undefined, preferred < 0 ? 0 : preferred));
+		});
+	});
+}
+
+function undoAction() {
+	const removed = M.undoLast();
+	if (!removed) {
+		toClock("NOTHING TO UNDO");
+		return;
+	}
+	Vibes.doublePulse();
+	toClock(`UNDID ${M.describeEvent(removed)}`);
+}
+
+function sinBinStatusScreen() {
+	let index = 0;
+
+	function bins() {
+		return M.match.sinBins;
+	}
+
+	function labels() {
+		const now = Date.now();
+		if (!bins().length)
+			return ["none active"];
+		return bins().map(bin => {
+			const left = Math.max(0, Math.ceil((bin.returnAt - now) / 1000));
+			return `${M.TEAM_INITIALS[bin.team]} #${bin.player} ${M.formatClock(left)}`;
+		});
+	}
+
+	return {
+		keys: LIST_KEYS,
+		signature: () => `bins|${index}|${labels().join(",")}`,
+		draw() {
+			drawList("SIN BINS", labels(), index, bins().length ? "SEL release early" : "BACK to menu");
+		},
+		onPress(which) {
+			const list = bins();
+			switch (which) {
+				case "up":
+					index = index > 0 ? index - 1 : Math.max(0, list.length - 1);
+					break;
+				case "down":
+					index = index < list.length - 1 ? index + 1 : 0;
+					break;
+				case "select": {
+					const bin = list[index];
+					if (!bin)
+						return;
+					M.removeSinBin(bin.team, bin.player);
+					Vibes.shortPulse();
+					index = 0;
+					toClock(`#${bin.player} RETURNED`);
+					return;
+				}
+				case "back":
+					pop();
+					return;
+			}
+			draw();
+		}
+	};
+}
+
+// --- Period transitions ---------------------------------------------------
+
+function endPeriodConfirm() {
+	return confirmScreen(`END PERIOD ${M.match.period}?`, () => {
+		M.endPeriod();
+		Vibes.shortPulse();
+		console.log(`period ${M.match.period} ended`);
+		afterPhase();
+	});
+}
+
+function abandonConfirm() {
+	return confirmScreen("ABANDON MATCH?", () => {
+		M.abandon();
+		Vibes.shortPulse();
+		console.log("match abandoned");
+		afterPhase();
+	});
+}
+
+function afterPhase() {
+	switch (M.match.phase) {
+		case M.SUMMARY:
+			show(summaryScreen());
+			break;
+		case M.INTERVAL:
+			show(intervalScreen());
+			break;
+		default:
+			show(clockScreen());
+			break;
+	}
+}
+
+function intervalScreen() {
+	const halfTime = 2 === M.match.config.periods && 1 === M.match.period;
+
+	return {
+		keys: LIST_KEYS,
+		signature: () => `interval|${M.match.period}|${scoreText()}|${binsText()}`,
+		draw() {
+			drawPanel(halfTime ? "HALF TIME" : `END OF P${M.match.period}`,
+				scoreText(),
+				`next: period ${M.match.period + 1}`,
+				"SEL start next period");
+		},
+		onPress(which) {
+			if ("select" === which) {
+				M.nextPeriod();
+				Vibes.shortPulse();
+				console.log(`period ${M.match.period} started`);
+				show(clockScreen());
+			}
+			else if ("back" === which) {
+				push(abandonConfirm());
+			}
+		}
+	};
+}
+
+// --- Summary --------------------------------------------------------------
+
+function summaryLines() {
+	const [home, away] = M.score();
+	const reds = team => M.cardCount(team, 1) + M.cardCount(team, 2);
+
+	const lines = [
+		scoreText(),
+		M.match.abandoned ? "ABANDONED" : "FULL TIME",
+		`${M.match.period} x ${M.match.config.periodMinutes} min`,
+		`YEL H${M.cardCount(M.HOME, 0)} A${M.cardCount(M.AWAY, 0)}`,
+		`RED H${reds(M.HOME)} A${reds(M.AWAY)}`
+	];
+	for (const event of M.match.events)
+		lines.push(M.describeEvent(event));
+	return lines;
+}
+
+function summaryScreen() {
+	const lines = summaryLines();
+	let index = 0;
+
+	return {
+		keys: LIST_KEYS,
+		signature: () => `summary|${index}|${activeNotice()}`,
+		draw() {
+			drawList("MATCH", lines, index, activeNotice() || "SEL for options");
+		},
+		onPress(which) {
+			switch (which) {
+				case "up":
+					index = index > 0 ? index - 1 : lines.length - 1;
+					break;
+				case "down":
+					index = index < lines.length - 1 ? index + 1 : 0;
+					break;
+				case "select":
+					push(listScreen("MATCH OPTIONS", ["Send to phone", "New match", "Exit"], choice => {
+						if (0 === choice) {
+							pop();
+							sendReport();
+						}
+						else if (1 === choice) {
+							M.reset();
+							show(setupScreen());
+						}
+						else {
+							watch.exit();
+						}
+					}));
+					return;
+				case "back":
+					pop();
+					return;
+			}
+			draw();
+		}
+	};
+}
+
+// --- Phone export ---------------------------------------------------------
+//
+// The watch holds the match; the phone holds history. Every failure path here
+// ends in a notice and nothing else — nothing on the watch may depend on the
+// phone being present.
+
+const CHUNK_BYTES = 180;
+
+let link;
+let chunks = [];
+let chunkIndex = 0;
+
+function sendReport() {
+	const json = JSON.stringify(M.report());
+	chunks = [];
+	for (let i = 0; i < json.length; i += CHUNK_BYTES)
+		chunks.push(json.slice(i, i + CHUNK_BYTES));
+	chunkIndex = 0;
+
+	try {
+		link ??= new Message({
+			format: "map",
+			keys: ["chunk", "index", "total"],
+			// Size the buffers explicitly. The default is
+			// app_message_{inbox,outbox}_size_maximum(), which asks for 8200
+			// bytes each — the XS machine has already taken its share of the
+			// app heap by this point, so the allocation fails and the app
+			// faults outright rather than throwing something catchable. One
+			// chunk plus its two integers and the dictionary overhead is a few
+			// hundred bytes, and the phone never sends anything back.
+			input: 128,
+			output: 512,
+			onReadable() {
+				this.read();		// drain: the phone has nothing to tell us
+			},
+			onWritable() {
+				pump();
+			}
+		});
+	}
+	catch {
+		setNotice("NO PHONE LINK");
+		draw();
+		return;
+	}
+
+	// Progress is reported by pump() once a chunk is actually away. The first
+	// write usually throws "not writable" — the link only opens up once the
+	// phone has answered the handshake — so claiming 1/N here would report a
+	// send that has not happened yet.
+	setNotice(`SENDING 0/${chunks.length}`, 60);
+	pump();
+}
+
+function pump() {
+	if (!chunks.length)
+		return;
+
+	if (chunkIndex >= chunks.length) {
+		chunks = [];
+		setNotice("SENT TO PHONE");
+		draw();
+		return;
+	}
+
+	try {
+		link.write(new Map([
+			["chunk", chunks[chunkIndex]],
+			["index", chunkIndex],
+			["total", chunks.length]
+		]));
+		chunkIndex++;
+		setNotice(`SENDING ${chunkIndex}/${chunks.length}`, 60);
+	}
+	catch {
+		// The outbox is busy or the phone dropped out. onWritable calls back if
+		// the link recovers; if it never does, the notice simply expires.
+	}
+	draw();
+}
+
+// --- Alerts and the tick --------------------------------------------------
+
+const PAUSE_REMINDER_MS = 10000;
+// Four fast taps. Nothing else in the vocabulary is four of anything, which is
+// the whole point: five patterns is the ceiling for what stays distinguishable
+// through a sleeve in the cold.
+const BIN_PATTERN = [120, 100, 120, 100, 120, 100, 120];
+
+let lastPauseReminder = 0;
+
+function checkAlerts(now) {
+	const remaining = M.remainingInPeriod();
+
+	if (!M.match.fired.warn && remaining <= M.WARN_SECONDS) {
+		M.match.fired.warn = now;
+		console.log("ALERT two-minute warning");
+		Vibes.doublePulse();
+		watch.light(true);
+		M.save();
+	}
+
+	if (!M.match.fired.final && remaining <= M.FINAL_WARN_SECONDS) {
+		M.match.fired.final = now;
+		console.log("ALERT thirty-second warning");
+		Vibes.pattern([200, 120, 200, 120, 200]);
+		watch.light(true);
+		M.save();
+	}
+
+	if (!M.match.fired.end && remaining <= 0) {
+		M.match.fired.end = now;
+		console.log("ALERT full time, entering stoppage");
+		Vibes.pattern([600, 250, 600, 250, 600, 250, 1000]);
+		watch.light(true);
+		setNotice(`P${M.match.period} TIME - BACK ENDS`, 15);
+		M.save();
+	}
+}
+
+function releaseBin(bin) {
+	Vibes.pattern(BIN_PATTERN);
+	watch.light(true);
+	setNotice(`#${bin.player} ${M.TEAM_NAMES[bin.team]} MAY RETURN`, 15);
+	// The BIN event keeps the record; sinBins only tracks who is off right now.
+	M.removeSinBin(bin.team, bin.player);
+}
+
+function checkSinBins(now) {
+	for (const bin of M.dueSinBins(now))
+		releaseBin(bin);
+}
+
+function tick() {
+	const now = Date.now();
+
+	if (M.RUNNING === M.match.phase)
+		checkAlerts(now);
+	else if (M.PAUSED === M.match.phase && now - lastPauseReminder >= PAUSE_REMINDER_MS) {
+		lastPauseReminder = now;
+		Vibes.shortPulse();
+	}
+
+	checkSinBins(now);
+	draw();
+}
+
+// --- Launch ---------------------------------------------------------------
+
+watch.addEventListener("wakeup", event => {
+	const bin = M.sinBinByCookie(event?.cookie);
+	if (bin)
+		releaseBin(bin);
+	draw();
+});
+
+function resumeIntoMatch() {
+	switch (M.match.phase) {
+		case M.SUMMARY:
+			show(summaryScreen());
+			break;
+		case M.INTERVAL:
+			show(intervalScreen());
+			break;
+		case M.SETUP:
+			show(setupScreen());
+			break;
+		default:
+			lastPauseReminder = Date.now();
+			show(clockScreen());
+			break;
+	}
+}
+
+function resumeScreen() {
+	return listScreen("MATCH IN PROGRESS", ["Resume", "New match"], choice => {
+		if (0 === choice) {
+			resumeIntoMatch();
+		}
+		else {
+			M.reset();
+			show(setupScreen());
+		}
+	}, `P${M.match.period} ${scoreText()}`);
+}
+
+// Launched by a sin-bin wakeup rather than by the referee: go straight to the
+// match. Asking "resume?" at the moment of an alert would be answering a
+// question nobody asked.
+let wokeUp;
+try {
+	wokeUp = watch.wake;
+}
+catch {
+	wokeUp = undefined;
+}
+
+const restored = M.restore();
+
+if (restored && wokeUp) {
+	resumeIntoMatch();
+	const bin = M.sinBinByCookie(wokeUp.cookie);
+	if (bin)
+		releaseBin(bin);
+}
+else if (restored && M.SUMMARY !== M.match.phase) {
+	show(resumeScreen());
+}
+else if (restored) {
+	show(summaryScreen());
+}
+else {
+	show(setupScreen());
+}
+
+setInterval(tick, 1000);
