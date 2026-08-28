@@ -37,12 +37,14 @@ it keeps running underneath — recording a goal never costs match time.
 | 2:00 remaining    | two pulses                         |
 | 0:30 remaining    | three quick taps                    |
 | End of period     | three long bursts, then a held one |
+| Break over        | two long pulses                    |
 | Sin bin expired   | four fast taps                     |
 | While paused      | a short pulse every 10 seconds     |
 
-Five patterns is the ceiling for what stays distinguishable through a sleeve in
-the cold. Each alert fires once, and each is armed only if the period actually
-starts above its trigger.
+Each alert fires once, and each is armed only if the period actually starts
+above its trigger. "Break over" is the only one that can fire on the interval
+screen, where none of the match alerts can, so it never has to be told apart
+from them — only from a sin bin, which is four fast taps and nothing like it.
 
 At 0:00 the clock does not stop. The ring, the digits and the status line all
 turn red and it reads STOPPAGE, and the time counts up so you can see how far
@@ -60,6 +62,29 @@ The match clock is phase-locked to the watch's own second. Every moment it is
 built from is snapped to a whole second, and the redraw is driven by the
 firmware's second tick rather than by an interval timer, so the digits change on
 the same edge a scoreboard's do instead of somewhere in the following second.
+
+## Half time
+
+Break length is not fixed — youth fixtures, tournaments and whatever the other
+officials agree on all move it — so it is set on the interval screen rather than
+in setup, and the choice is remembered for the next break.
+
+| Button      | Interval screen                                  |
+|-------------|--------------------------------------------------|
+| UP / DOWN   | Break length, 0-30 min (hold to run)             |
+| SELECT      | Start the break; once running, start next period |
+| BACK        | Abandon match (asks first)                       |
+
+SELECT changes meaning with state rather than needing a hold: it starts the
+break, and once one is running it is back to its old job of starting the next
+period. A break set to `OFF` has nothing to start, so SELECT passes straight
+through and the screen behaves exactly as it did before this existed.
+
+The break runs on plain wall time and is never paused — a half time that stops
+when you look away is not measuring the thing you need measured. At 0:00 it
+vibrates and counts up, so you can see how far over you are. It survives the app
+being killed: the countdown is derived from when it started, not from a counter,
+so a notification mid-break costs nothing.
 
 ## Sin bins
 

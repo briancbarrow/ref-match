@@ -30,6 +30,10 @@ export const CARD_KINDS = ["Yellow", "2nd yellow", "Red"];
 export const CARD_SHORT = ["YEL", "2YEL", "RED"];
 
 export const WARN_SECONDS = 120;
+// Half time is not a fixed quantity — youth fixtures, tournament schedules and
+// whatever the other officials agree on all move it — so it is set on the
+// interval screen rather than in setup, and 0 means no break timer at all.
+export const BREAK_MINUTES_MAX = 30;
 export const FINAL_WARN_SECONDS = 30;
 
 // A real match produces a few dozen events. The cap exists so a stuck button
@@ -48,20 +52,60 @@ catch {
 }
 
 export const match = {
-	config: { periods: 2, periodMinutes: 45, sinBinMinutes: 10 },
+	config: { periods: 2, periodMinutes: 45, sinBinMinutes: 10, breakMinutes: 10 },
 	period: 1,
 	phase: SETUP,
-	clock: { periodStartedAt: 0, pausedTotal: 0, pausedAt: 0 },
+	clock: { periodStartedAt: 0, pausedTotal: 0, pausedAt: 0, breakStartedAt: 0 },
 	events: [],
 	sinBins: [],
 	// firedAt timestamps, not booleans: a boolean is a lie after a relaunch.
 	// 1 is the "suppressed" sentinel for an alert the period starts below.
-	fired: { warn: 0, final: 0, end: 0 },
+	fired: { warn: 0, final: 0, end: 0, break: 0 },
 	abandoned: false
 };
 
 export function periodSeconds() {
 	return match.config.periodMinutes * 60;
+}
+
+// --- The interval break ---------------------------------------------------
+//
+// Unlike the match clock this one is never paused: a half time that stops when
+// you look away is not measuring the thing the referee needs measured. It runs
+// on plain wall time from the moment it is started, and like the match clock it
+// is snapped to a whole second so it ticks on the RTC edge.
+
+export function breakSeconds() {
+	return match.config.breakMinutes * 60;
+}
+
+export function breakRunning() {
+	return match.clock.breakStartedAt > 0;
+}
+
+export function startBreak() {
+	match.clock.breakStartedAt = snapped();
+	match.fired.break = 0;
+	save();
+}
+
+export function remainingInBreak() {
+	if (!match.clock.breakStartedAt)
+		return breakSeconds();
+	return breakSeconds() - Math.floor((Date.now() - match.clock.breakStartedAt) / 1000);
+}
+
+// Deliberately does not save. UP/DOWN repeat at 100ms, so persisting here would
+// be ten flash writes a second for as long as the button is held. The setting
+// is written when the break is started and again when the period starts; the
+// worst case is a kill mid-adjustment losing a number the referee is still
+// choosing.
+export function setBreakMinutes(minutes) {
+	match.config.breakMinutes = Math.min(BREAK_MINUTES_MAX, Math.max(0, minutes));
+	// Extending a break that has already run out should ring again at the new
+	// time rather than stay silent because the alert fired once already.
+	if (remainingInBreak() > 0)
+		match.fired.break = 0;
 }
 
 // Every moment the clock is built from is snapped to a whole second, so
@@ -147,14 +191,15 @@ export function undoLast() {
 
 export function startPeriod() {
 	match.phase = RUNNING;
-	match.clock = { periodStartedAt: snapped(), pausedTotal: 0, pausedAt: 0 };
+	match.clock = { periodStartedAt: snapped(), pausedTotal: 0, pausedAt: 0, breakStartedAt: 0 };
 	// Don't arm an alert for a period that starts at or below its own trigger:
 	// a 1-minute period should skip the two-minute warning, not fire it at once.
 	const length = periodSeconds();
 	match.fired = {
 		warn: length <= WARN_SECONDS ? 1 : 0,
 		final: length <= FINAL_WARN_SECONDS ? 1 : 0,
-		end: 0
+		end: 0,
+		break: 0
 	};
 	save();
 }
@@ -182,6 +227,10 @@ export function endPeriod() {
 	if (!match.clock.pausedAt)
 		match.clock.pausedAt = snapped();
 	match.phase = match.period < match.config.periods ? INTERVAL : SUMMARY;
+	// Each interval starts with its break unstarted, so the referee presses to
+	// begin it rather than inheriting a countdown from the previous one.
+	match.clock.breakStartedAt = 0;
+	match.fired.break = 0;
 	if (SUMMARY === match.phase)
 		cancelAllSinBins();
 	save();
@@ -318,6 +367,14 @@ export function restore() {
 	if (match.clock.pausedAt)
 		match.clock.pausedAt = snapped(match.clock.pausedAt);
 
+	// Object.assign replaces config, clock and fired wholesale, so a match saved
+	// before the break existed comes back with these undefined rather than absent.
+	match.config.breakMinutes ??= 10;
+	match.clock.breakStartedAt ??= 0;
+	match.fired.break ??= 0;
+	if (match.clock.breakStartedAt)
+		match.clock.breakStartedAt = snapped(match.clock.breakStartedAt);
+
 	return true;
 }
 
@@ -326,10 +383,10 @@ export function reset() {
 	Object.assign(match, {
 		period: 1,
 		phase: SETUP,
-		clock: { periodStartedAt: 0, pausedTotal: 0, pausedAt: 0 },
+		clock: { periodStartedAt: 0, pausedTotal: 0, pausedAt: 0, breakStartedAt: 0 },
 		events: [],
 		sinBins: [],
-		fired: { warn: 0, final: 0, end: 0 },
+		fired: { warn: 0, final: 0, end: 0, break: 0 },
 		abandoned: false
 	});
 	try {

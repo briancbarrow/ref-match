@@ -30,9 +30,9 @@ Two layers, changing for different reasons and persisted differently.
 
 ```js
 match = {
-  config:  { periods: 2, periodMinutes: 45, sinBinMinutes: 10 },
+  config:  { periods: 2, periodMinutes: 45, sinBinMinutes: 10, breakMinutes: 10 },
   period:  1,
-  clock:   { periodStartedAt, pausedTotal, pausedAt },
+  clock:   { periodStartedAt, pausedTotal, pausedAt, breakStartedAt },
   events:  [ { t, type, team, player, reason } ],
   sinBins: [ { team, player, wakeupId, returnAt } ]
 }
@@ -152,12 +152,39 @@ Sin bin → team → player → duration
 | 2:00 remaining    | `doublePulse()`                            |
 | 0:30 remaining    | `pattern([200,120,200,120,200])`           |
 | Period end        | `pattern([600,250,600,250,600,250,1000])`  |
+| Break over        | `pattern([500,300,500])`                   |
 | Sin bin expired   | four fast taps                             |
 | Paused, every 10s | `shortPulse()`                             |
 
 Five is the ceiling for what stays distinguishable through a sleeve in the
 cold. Past that people stop trusting the difference and look at the watch,
 which defeats the purpose.
+
+Break over is a deliberate sixth, and it is affordable because the ceiling is
+really about how many can be confused *with each other at the same moment*. It
+only fires on the interval screen, and none of the match alerts can fire there.
+The one pattern it has to be told apart from is a sin bin expiring, which is
+four fast taps against two long pulses.
+
+## The interval break
+
+Half time is variable in a way period length is not — youth fixtures,
+tournament schedules, whatever the officials agree on at the time — so it is
+set on the interval screen and remembered, rather than being a fourth setup
+question answered before anyone knows the answer.
+
+Started by a press rather than automatically at the whistle. The referee is
+usually still on the field when a half ends, and a countdown that began without
+being asked is one they then have to correct.
+
+Never paused. A break clock that stops when the watch is not being looked at
+measures the wrong thing; the match clock pauses because play stops, and a
+break has no equivalent.
+
+SELECT carries both jobs without a hold, because they cannot both apply at
+once: it starts the break, and once one is running it starts the next period.
+`breakMinutes: 0` means OFF, which restores the single press the screen took
+before the break existed.
 
 ## Persistence
 

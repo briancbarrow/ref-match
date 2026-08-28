@@ -598,26 +598,68 @@ function afterPhase() {
 
 function intervalScreen() {
 	const halfTime = 2 === M.match.config.periods && 1 === M.match.period;
+	const title = halfTime ? "HALF TIME" : `END OF P${M.match.period}`;
+
+	function startNext() {
+		M.nextPeriod();
+		Vibes.shortPulse();
+		console.log(`period ${M.match.period} started`);
+		show(clockScreen());
+	}
 
 	return {
-		keys: LIST_KEYS,
-		signature: () => `interval|${M.match.period}|${scoreText()}|${binsText()}`,
+		// NUMBER_KEYS for the repeat on UP/DOWN: a twenty-minute break is a hold
+		// rather than twenty presses.
+		keys: NUMBER_KEYS,
+		signature() {
+			const value = M.breakRunning() ? M.formatClock(M.remainingInBreak()) : M.match.config.breakMinutes;
+			return `interval|${M.match.period}|${scoreText()}|${binsText()}|${M.breakRunning()}|${value}`;
+		},
 		draw() {
-			drawPanel(halfTime ? "HALF TIME" : `END OF P${M.match.period}`,
+			const running = M.breakRunning();
+			const remaining = M.remainingInBreak();
+			const off = 0 === M.match.config.breakMinutes;
+			const next = `SEL start P${M.match.period + 1}`;
+
+			let hint;
+			if (!running)
+				hint = off ? `UP set break, ${next}` : "UP/DN set, SEL start break";
+			else
+				hint = remaining < 0 ? `BREAK OVER - ${next}` : next;
+
+			// Gothic-Bold 28 is a full font, so unlike the clock screen's digit
+			// subset this value can say OFF outright.
+			drawPanel(title,
+				off ? "OFF" : M.formatClock(running ? remaining : M.breakSeconds()),
 				scoreText(),
-				`next: period ${M.match.period + 1}`,
-				"SEL start next period");
+				hint);
 		},
 		onPress(which) {
-			if ("select" === which) {
-				M.nextPeriod();
-				Vibes.shortPulse();
-				console.log(`period ${M.match.period} started`);
-				show(clockScreen());
+			switch (which) {
+				case "up":
+					M.setBreakMinutes(M.match.config.breakMinutes + 1);
+					break;
+				case "down":
+					M.setBreakMinutes(M.match.config.breakMinutes - 1);
+					break;
+				case "select":
+					// SELECT means "start the break" until one is running, then goes
+					// back to its old job of starting the next period. A break set
+					// to OFF has nothing to start, so it passes straight through —
+					// which is the single press this screen took before.
+					if (M.breakRunning() || 0 === M.match.config.breakMinutes) {
+						startNext();
+						return;
+					}
+					M.startBreak();
+					Vibes.shortPulse();
+					console.log(`break started: ${M.match.config.breakMinutes} min`);
+					break;
+				case "back":
+					push(abandonConfirm());
+					return;
 			}
-			else if ("back" === which) {
-				push(abandonConfirm());
-			}
+			draw();
 		}
 	};
 }
@@ -810,6 +852,26 @@ function releaseBin(bin) {
 	M.removeSinBin(bin.team, bin.player);
 }
 
+// Two long pulses. This takes the vocabulary to six patterns, one past the
+// ceiling DESIGN.md sets, and it is worth it because context does the
+// disambiguating: none of the match alerts can fire during an interval, so the
+// only other thing the watch can say here is a sin bin expiring — and that is
+// four fast taps, which is nothing like this.
+const BREAK_PATTERN = [500, 300, 500];
+
+function checkBreak(now) {
+	if (!M.breakRunning() || M.match.fired.break)
+		return;
+	if (M.remainingInBreak() > 0)
+		return;
+
+	M.match.fired.break = now;
+	console.log("ALERT break over");
+	Vibes.pattern(BREAK_PATTERN);
+	watch.light(true);
+	M.save();
+}
+
 function checkSinBins(now) {
 	for (const bin of M.dueSinBins(now))
 		releaseBin(bin);
@@ -839,6 +901,9 @@ function tick() {
 		lastPauseReminder = now;
 		Vibes.shortPulse();
 	}
+
+	if (M.INTERVAL === M.match.phase)
+		checkBreak(now);
 
 	checkSinBins(now);
 	draw();
