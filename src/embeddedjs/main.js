@@ -150,6 +150,32 @@ function binsText() {
 	return active ? `BIN ${active}` : "";
 }
 
+// The referee's own watch setting, read once: it cannot change while the app
+// is in the foreground, and the getter is a native call on every redraw.
+let hour12;
+try {
+	hour12 = watch.hour12;
+}
+catch {
+	hour12 = false;
+}
+
+// Time of day for the clock screen. 24-hour pads the hour so the field keeps
+// one width all match; 12-hour does not, because "03:47" is not how a clock
+// reads. Seconds are deliberately absent — the match clock is the thing being
+// read to the second, and a second field competing with it is noise.
+function timeOfDay(date) {
+	const minutes = date.getMinutes();
+	let hours = date.getHours();
+	if (hour12) {
+		hours %= 12;
+		if (!hours)
+			hours = 12;
+	}
+	const hh = !hour12 && hours < 10 ? `0${hours}` : `${hours}`;
+	return `${hh}:${minutes < 10 ? "0" : ""}${minutes}`;
+}
+
 // --- Generic screens ------------------------------------------------------
 
 function listScreen(title, items, onSelect, hint, start = 0) {
@@ -297,24 +323,48 @@ function startMatch() {
 
 // --- Clock ----------------------------------------------------------------
 
+// One word for how the period is going, which picks both the ring colour and
+// the colour of the digits. Kept here rather than in ui.js so the drawing layer
+// still knows nothing about match state.
+function clockTone(remaining) {
+	if (M.PAUSED === M.match.phase)
+		return "pause";
+	if (remaining < 0)
+		return "stop";
+	// Same guard startPeriod() puts on the vibration: a period that begins at or
+	// below the two-minute mark never earns the warning, because a 1-minute
+	// period rendered amber from the whistle says nothing at all.
+	if (M.periodSeconds() > M.WARN_SECONDS && remaining <= M.WARN_SECONDS)
+		return "warn";
+	return "run";
+}
+
 function clockScreen() {
 	return {
 		keys: CLOCK_KEYS,
 		signature() {
-			return `clock|${M.match.phase}|${M.match.period}|${M.formatClock(M.remainingInPeriod())}|${scoreText()}|${binsText()}|${activeNotice()}`;
+			return `clock|${M.match.phase}|${M.match.period}|${M.formatClock(M.remainingInPeriod())}|${scoreText()}|${binsText()}|${timeOfDay(new Date())}|${activeNotice()}`;
 		},
 		draw() {
 			const remaining = M.remainingInPeriod();
 			const paused = M.PAUSED === M.match.phase;
+			const bins = binsText();
+			const status = paused ? "PAUSED" : (remaining < 0 ? "STOPPAGE" : "RUNNING");
 			drawClock({
-				period: `P${M.match.period}/${M.match.config.periods}`,
+				// Period and time of day share the top line. Two corner-anchored
+				// labels would be the obvious layout and is exactly what a round
+				// screen has no pixels for.
+				header: `P${M.match.period}/${M.match.config.periods}   ${timeOfDay(new Date())}`,
 				score: scoreText(),
 				// Roboto-Bold 49 carries digits and the colon only, so the clock
-				// itself can never show a sign; stoppage reads from the label.
+				// itself can never show a sign; stoppage reads from the ring and
+				// the label instead.
 				clock: M.formatClock(remaining),
-				status: paused ? "PAUSED" : (remaining < 0 ? "STOPPAGE" : "RUNNING"),
-				stoppage: remaining < 0,
-				bins: binsText(),
+				status: bins ? `${status}  ${bins}` : status,
+				// Fraction of the period still to play, which is what the ring
+				// draws. Stoppage is an empty ring, not a negative one.
+				progress: Math.max(0, remaining) / M.periodSeconds(),
+				tone: clockTone(remaining),
 				hint: paused ? "SEL resume" : "UP goal  DN card",
 				notice: activeNotice()
 			});
@@ -765,6 +815,21 @@ function checkSinBins(now) {
 		releaseBin(bin);
 }
 
+// Driven by the firmware's second tick rather than by setInterval.
+//
+// setInterval fired every 1000ms counted from app launch and was never
+// re-aligned, so the redraw landed at an arbitrary offset — up to a full second
+// — after the clock's value had actually changed, and Pebble's timers can fire
+// early (Moddable's own watch code carries a 50ms guard for exactly that), so
+// the offset wandered over ninety minutes. That is why the app read fast
+// against a scoreboard at some moments and slow at others.
+//
+// "secondchange" is the firmware's tick_timer_service. It fires just after each
+// RTC second and re-computes its own delay from `Date.now() % 1000` every time,
+// so it cannot accumulate drift. Since match.js now snaps the clock to whole
+// seconds, that RTC second is also the moment the displayed value changes: the
+// redraw and the value it draws are on the same edge. This is the same
+// self-rephasing scheme pebble-timer-plus uses in prv_app_timer_callback.
 function tick() {
 	const now = Date.now();
 
@@ -847,4 +912,4 @@ else {
 	show(setupScreen());
 }
 
-setInterval(tick, 1000);
+watch.addEventListener("secondchange", tick);

@@ -44,9 +44,22 @@ Five patterns is the ceiling for what stays distinguishable through a sleeve in
 the cold. Each alert fires once, and each is armed only if the period actually
 starts above its trigger.
 
-At 0:00 the clock does not stop. The status line turns red and reads STOPPAGE,
-and the time counts up so you can see how far past regulation you are. The
-period ends when you end it.
+At 0:00 the clock does not stop. The ring, the digits and the status line all
+turn red and it reads STOPPAGE, and the time counts up so you can see how far
+past regulation you are. The period ends when you end it.
+
+## The clock screen
+
+A ring around the edge drains as the period runs: green, amber inside the last
+two minutes, grey while paused, and solid red once you are into stoppage — the
+same two-minute mark the vibration uses, so the watch says the same thing
+whether it is felt or glanced at. Inside the ring: period and time of day, the
+score, the match clock, the status, and the button hint.
+
+The match clock is phase-locked to the watch's own second. Every moment it is
+built from is snapped to a whole second, and the redraw is driven by the
+firmware's second tick rather than by an interval timer, so the digits change on
+the same edge a scoreboard's do instead of somewhere in the following second.
 
 ## Sin bins
 

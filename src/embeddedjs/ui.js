@@ -25,7 +25,12 @@ export const colors = {
 	white: render.makeColor(255, 255, 255),
 	black: render.makeColor(0, 0, 0),
 	red: render.makeColor(255, 0, 0),
-	gray: render.makeColor(110, 110, 110)
+	gray: render.makeColor(110, 110, 110),
+	// The ring palette. Both target platforms are colour; each of these lands on
+	// an exact Pebble 64-colour entry, so nothing is dithered.
+	green: render.makeColor(0, 170, 0),
+	yellow: render.makeColor(255, 170, 0),
+	track: render.makeColor(170, 170, 170)
 };
 
 const PAD = 3;
@@ -66,13 +71,13 @@ function centered(text, font, color, y) {
 // "12' 2YEL A #11" into something that reads as a different event entirely. The
 // marker is two ASCII dots, not an ellipsis: the system fonts are not
 // guaranteed to carry U+2026 and a missing glyph is worse than a plain one.
-function fit(text, font, width) {
+function fit(text, font, width, marker = "..") {
 	if (textWidth(text, font) <= width)
 		return text;
 	let cut = text;
-	while (cut.length > 1 && textWidth(`${cut}..`, font) > width)
+	while (cut.length > 1 && textWidth(`${cut}${marker}`, font) > width)
 		cut = cut.slice(0, -1);
-	return `${cut}..`;
+	return `${cut}${marker}`;
 }
 
 // Draw centred and clipped to what is visible at this height. Used for every
@@ -105,46 +110,117 @@ function footer(text, color = colors.gray) {
 	line(text, fonts.hint, color, y);
 }
 
+// --- The progress ring ----------------------------------------------------
+//
+// Poco's Pebble build adds drawCircle(color, x, y, r, fromDeg, toDeg), which is
+// graphics_fill_radial at full inset: a filled pie wedge, 0 degrees at twelve
+// o'clock, running clockwise. A ring is therefore three fills, the same trick
+// pebble-timer-plus uses in drawing_render — flood the screen with the track
+// colour, lay the remaining arc over it, then drop a disc of background in the
+// middle and what is left is a band.
+//
+// On the round gabbro that band is a true annulus. On the rectangular emery the
+// disc is inscribed in the width, so the band is thinnest at the sides and
+// opens out towards the corners. That is the one part of a rectangular screen a
+// referee's eye never uses, so widening it there costs nothing.
+
+const CENTRE_X = render.width / 2;
+const CENTRE_Y = render.height / 2;
+
+// Round loses its outermost pixels under the bezel, so its band is drawn wider.
+const BAND = ROUND ? 14 : 8;
+
+// Far enough to reach every corner: the flood and the arc must both cover the
+// whole screen or the corners keep whatever was underneath.
+const RING_OUTER = Math.ceil(Math.sqrt(render.width * render.width + render.height * render.height) / 2);
+
+// Everything the clock screen draws lives inside this disc.
+const RING_INNER = Math.round(Math.min(render.width, render.height) / 2) - BAND;
+
+// The chord across a row of the inner disc. Same reasoning as usableWidth, but
+// measured against the ring rather than the glass: on emery the ring is now the
+// tighter of the two, so the clock screen fits text to it on both shapes.
+function ringWidth(y, height) {
+	const furthest = Math.max(Math.abs(y - CENTRE_Y), Math.abs(y + height - CENTRE_Y));
+	const half = Math.sqrt(Math.max(0, RING_INNER * RING_INNER - furthest * furthest));
+	return Math.max(0, half * 2 - PAD * 2);
+}
+
+function ringLine(text, font, color, y, width, marker) {
+	centered(fit(text, font, width ?? ringWidth(y, font.height), marker), font, color, y);
+}
+
+function ring(progress, arc, track) {
+	render.fillRectangle(track, 0, 0, render.width, render.height);
+
+	// Rounded, not truncated: at 45 minutes a whole degree is 7.5 seconds, and
+	// truncating would leave the ring visibly behind the digits it sits around.
+	const sweep = Math.round(360 * Math.min(1, Math.max(0, progress)));
+	if (sweep > 0)
+		render.drawCircle(arc, CENTRE_X, CENTRE_Y, RING_OUTER, 0, sweep);
+
+	render.drawCircle(colors.white, CENTRE_X, CENTRE_Y, RING_INNER, 0, 360);
+}
+
+// How the ring and the digits are coloured. `run` is the ordinary case; `warn`
+// picks up the same two-minute mark the vibration does, so the watch says the
+// same thing whether it is felt or glanced at.
+const TONES = {
+	run: { arc: colors.green, track: colors.track, text: colors.black },
+	warn: { arc: colors.yellow, track: colors.track, text: colors.black },
+	// A period past its time has no ring left to drain, so the whole band goes
+	// red rather than empty — an empty ring reads as "not started".
+	stop: { arc: colors.red, track: colors.red, text: colors.red },
+	pause: { arc: colors.gray, track: colors.track, text: colors.gray }
+};
+
 // --- Screens --------------------------------------------------------------
 
-// view: { period, score, clock, status, stoppage, bins, hint, notice }
+// view: { header, score, clock, status, progress, tone, hint, notice }
 export function drawClock(view) {
 	render.begin();
-	background();
 
-	const accent = view.stoppage ? colors.red : colors.black;
+	const tone = TONES[view.tone] ?? TONES.run;
+	ring(view.progress, tone.arc, tone.track);
 
-	// Period and sin-bin count share one centred line. They were in opposite
-	// corners, which is exactly where a round screen has no pixels.
-	const top = INSET;
-	line(view.bins ? `${view.period}   ${view.bins}` : view.period,
-		fonts.hint, colors.gray, top);
+	// Five rows, centred in the disc as one block. Pinning the hint to the
+	// bottom of the disc is the obvious layout and is wrong: the chord there is
+	// only a few pixels wide, so the line would be truncated to nothing.
+	const rows = [
+		{ text: view.header, font: fonts.hint, color: colors.gray },
+		{ text: view.score, font: fonts.score, color: colors.black },
+		// Roboto-Bold 49 is a digit/colon subset. An overrun here must clip
+		// silently rather than pick up the usual ".." marker, which is a glyph
+		// this font does not carry.
+		{ text: view.clock, font: fonts.clock, color: tone.text, marker: "" },
+		{ text: view.status, font: fonts.row, color: tone.text },
+		{ text: view.notice || view.hint, font: fonts.hint, color: colors.gray }
+	];
 
-	// Centre the score/clock/status block in what is left between that line and
-	// the footer, rather than stacking from the top: stacking leaves the whole
-	// of emery's extra height as a hole under the clock.
-	const above = top + fonts.hint.height + 2;
-	const below = render.height - INSET - fonts.hint.height - PAD;
-	const block = fonts.score.height + 2 + fonts.clock.height + 2 + fonts.row.height;
+	const GAP = 2;
+	const top = Math.round(CENTRE_Y - RING_INNER) + PAD;
+	const bottom = Math.round(CENTRE_Y + RING_INNER) - PAD;
+	let block = GAP * (rows.length - 1);
+	for (const row of rows)
+		block += row.font.height;
 
-	let y = above + Math.max(0, Math.round((below - above - block) / 2));
-	line(view.score, fonts.score, colors.black, y);
-
-	y += fonts.score.height + 2;
-	line(view.clock, fonts.clock, accent, y);
-
-	y += fonts.clock.height + 2;
-	line(view.status, fonts.row, view.stoppage ? colors.red : colors.gray, y);
-
-	// The notice line borrows the hint row: a sin bin expiring matters more than
-	// a reminder of which button does what.
-	if (view.notice) {
-		const noticeY = render.height - INSET - fonts.hint.height;
-		render.fillRectangle(colors.black, 0, noticeY - 2, render.width, fonts.hint.height + 4);
-		line(view.notice, fonts.hint, colors.white, noticeY);
-	}
-	else {
-		footer(view.hint);
+	let y = top + Math.max(0, Math.round((bottom - top - block) / 2));
+	for (const row of rows) {
+		// The notice inverts the hint row: a sin bin expiring matters more than a
+		// reminder of which button does what, and it has to win the glance.
+		if (row.text === view.notice && view.notice) {
+			// The bar is taller than its text, so its chord is the narrower of the
+			// two. Fit the text to the bar, not to the text's own row, or a long
+			// notice runs out past the ends of the black it is meant to sit on.
+			const width = ringWidth(y - 2, row.font.height + 4);
+			render.fillRectangle(colors.black, Math.round(CENTRE_X - width / 2), y - 2,
+				Math.round(width), row.font.height + 4);
+			ringLine(view.notice, row.font, colors.white, y, width - PAD * 2);
+		}
+		else {
+			ringLine(row.text, row.font, row.color, y, undefined, row.marker);
+		}
+		y += row.font.height + GAP;
 	}
 
 	render.end();

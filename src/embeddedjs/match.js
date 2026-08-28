@@ -64,6 +64,21 @@ export function periodSeconds() {
 	return match.config.periodMinutes * 60;
 }
 
+// Every moment the clock is built from is snapped to a whole second, so
+// periodStartedAt and pausedTotal are always exact multiples of 1000ms. That
+// makes the match clock's own second boundary land on the RTC second boundary,
+// which is the edge the firmware's "secondchange" event fires just after and
+// the edge a scoreboard operator's stopwatch ticks on.
+//
+// Without this the boundary sat at `periodStartedAt % 1000` past each wall
+// second -- an arbitrary offset that the redraw could not be aligned to, and
+// that moved again on every pause because resume() folded a fractional number
+// of milliseconds into pausedTotal. That is the whole of the "sometimes faster,
+// sometimes slower, but fine once I have paused it once" drift.
+function snapped(ms = Date.now()) {
+	return Math.round(ms / 1000) * 1000;
+}
+
 // Derived from wall time, never from a decrementing counter: setInterval
 // drifts, and a counter is simply wrong after the app is killed and relaunched.
 export function elapsedInPeriod() {
@@ -132,7 +147,7 @@ export function undoLast() {
 
 export function startPeriod() {
 	match.phase = RUNNING;
-	match.clock = { periodStartedAt: Date.now(), pausedTotal: 0, pausedAt: 0 };
+	match.clock = { periodStartedAt: snapped(), pausedTotal: 0, pausedAt: 0 };
 	// Don't arm an alert for a period that starts at or below its own trigger:
 	// a 1-minute period should skip the two-minute warning, not fire it at once.
 	const length = periodSeconds();
@@ -148,7 +163,7 @@ export function pause() {
 	if (RUNNING !== match.phase)
 		return;
 	match.phase = PAUSED;
-	match.clock.pausedAt = Date.now();
+	match.clock.pausedAt = snapped();
 	save();
 }
 
@@ -156,7 +171,7 @@ export function resume() {
 	if (PAUSED !== match.phase)
 		return;
 	match.phase = RUNNING;
-	match.clock.pausedTotal += Date.now() - match.clock.pausedAt;
+	match.clock.pausedTotal += snapped() - match.clock.pausedAt;
 	match.clock.pausedAt = 0;
 	save();
 }
@@ -165,7 +180,7 @@ export function endPeriod() {
 	// Record before freezing the clock so the event carries the real minute.
 	addEvent({ type: PERIOD_END });
 	if (!match.clock.pausedAt)
-		match.clock.pausedAt = Date.now();
+		match.clock.pausedAt = snapped();
 	match.phase = match.period < match.config.periods ? INTERVAL : SUMMARY;
 	if (SUMMARY === match.phase)
 		cancelAllSinBins();
@@ -182,7 +197,7 @@ export function nextPeriod() {
 export function abandon() {
 	match.abandoned = true;
 	if (!match.clock.pausedAt)
-		match.clock.pausedAt = Date.now();
+		match.clock.pausedAt = snapped();
 	match.phase = SUMMARY;
 	cancelAllSinBins();
 	save();
@@ -293,6 +308,16 @@ export function restore() {
 		return false;
 
 	Object.assign(match, saved);
+
+	// A match written by a build that did not snap the clock carries a
+	// fractional offset. Re-snapping moves the elapsed time by under half a
+	// second, which nobody can see, and buys back the phase lock for the rest
+	// of the match rather than only from the next period on.
+	match.clock.periodStartedAt = snapped(match.clock.periodStartedAt);
+	match.clock.pausedTotal = snapped(match.clock.pausedTotal);
+	if (match.clock.pausedAt)
+		match.clock.pausedAt = snapped(match.clock.pausedAt);
+
 	return true;
 }
 

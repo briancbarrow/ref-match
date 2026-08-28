@@ -53,6 +53,28 @@ elapsed = (now - periodStartedAt - pausedTotal) / 1000
 A counter is wrong the moment the app is killed and relaunched. Alert flags are
 `firedAt` timestamps rather than booleans, for the same reason.
 
+**Snap every moment the clock is built from to a whole second.** Deriving from
+wall time is necessary but not sufficient: with a raw `Date.now()` start, the
+displayed value flips at `periodStartedAt % 1000` past each wall second, an
+arbitrary offset no redraw can be aligned to. `resume()` folding a fractional
+pause into `pausedTotal` then moved it again. Against a scoreboard that reads as
+up to a second out, wandering during the half and mysteriously improving after a
+pause — which is what a referee actually reports.
+
+With `periodStartedAt` and `pausedTotal` both exact multiples of 1000ms, the
+clock's own second boundary *is* the RTC second boundary.
+
+**Drive the redraw from `watch.addEventListener("secondchange", ...)`**, the
+firmware's `tick_timer_service`. It fires just after each RTC second and
+recomputes its delay from `Date.now() % 1000` every time, so it cannot
+accumulate drift. `setInterval(tick, 1000)` could not: it counts from app launch
+and never re-aligns. pebble-timer-plus reaches the same place from the other
+direction, re-arming an `AppTimer` for `value_ms % 1000` on every tick.
+
+Measured on the emulator: the tick lands at `Date.now() % 1000 == 50` on 38 of
+39 consecutive seconds (51 on the other), across a pause and resume, with the
+snapped remainders staying at zero.
+
 ### UI state (navigation, not persisted)
 
 ```
