@@ -447,26 +447,27 @@ function pickPlayer(title, team, next) {
 	push(numberScreen(title, M.TEAM_NAMES[team], player => next(player)));
 }
 
+// Goals and cards do not ask for a shirt number. Numbers run high in the
+// leagues this is used in, and cycling one up 0-99 costs more attention than
+// the referee has to spare while the clock runs — the team and the minute are
+// what the scoreline and the report need.
+
 function goalFlow() {
 	pickTeam("GOAL", team => {
-		pickPlayer("SCORER", team, player => {
-			M.addEvent({ type: M.GOAL, team, player });
-			Vibes.shortPulse();
-			const [home, away] = M.score();
-			toClock(`GOAL ${M.TEAM_NAMES[team]} ${home}-${away}`);
-		});
+		M.addEvent({ type: M.GOAL, team });
+		Vibes.shortPulse();
+		const [home, away] = M.score();
+		toClock(`GOAL ${M.TEAM_NAMES[team]} ${home}-${away}`);
 	});
 }
 
 function cardFlow() {
 	pickTeam("CARD", team => {
-		pickPlayer("PLAYER", team, player => {
-			push(listScreen("CARD", M.CARD_KINDS, kind => {
-				M.addEvent({ type: M.CARD, team, player, kind });
-				Vibes.shortPulse();
-				toClock(`${M.CARD_SHORT[kind]} ${M.TEAM_INITIALS[team]} #${player}`);
-			}));
-		});
+		push(listScreen("CARD", M.CARD_KINDS, kind => {
+			M.addEvent({ type: M.CARD, team, kind });
+			Vibes.shortPulse();
+			toClock(`${M.CARD_SHORT[kind]} ${M.TEAM_INITIALS[team]}`);
+		}));
 	});
 }
 

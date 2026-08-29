@@ -105,6 +105,25 @@ The watch holds the match; the phone holds history. Nothing on the watch
 depends on the phone being present — if the link is down, the send stalls and
 says so, and the match is unaffected.
 
+## Getting the log off the phone
+
+Open Ref Match's settings in the Pebble app. The settings page lists every
+stored match as markdown, with `Save .md` (the phone's share sheet, so the file
+can go to Files, Drive or a mail draft), `Copy`, and `Clear history`.
+
+The page is `config/index.html`, a single static file with no backend. Publish
+it anywhere that serves it over https and point `CONFIG_URL` in
+`src/pkjs/index.js` at it — the default is GitHub Pages for this repo:
+
+```sh
+git subtree push --prefix config origin gh-pages   # or serve config/ anywhere
+```
+
+The match log travels to the page in the URL fragment, which browsers do not
+send to the server, so whoever hosts the page never sees a match. Fifty matches
+encode to roughly 37 KB of fragment; past 60 KB the oldest are dropped from the
+export rather than risking a URL the phone will not open.
+
 ## Building and running
 
 ```sh
