@@ -410,14 +410,21 @@ export function matchMinute(seconds) {
 	return Math.floor(seconds / 60) + 1;
 }
 
+function shirt(player) {
+	return undefined === player ? "" : ` #${player}`;
+}
+
 export function describeEvent(e) {
 	const when = `${matchMinute(e.t)}'`;
 	const team = TEAM_INITIALS[e.team];
 	switch (e.type) {
+		// Goals and cards carry no player. Matches saved by a build that
+		// recorded one still print it, so old logs read the way they were
+		// entered.
 		case GOAL:
-			return `${when} GOAL ${team} #${e.player}`;
+			return `${when} GOAL ${team}${shirt(e.player)}`;
 		case CARD:
-			return `${when} ${CARD_SHORT[e.kind]} ${team} #${e.player}`;
+			return `${when} ${CARD_SHORT[e.kind]} ${team}${shirt(e.player)}`;
 		case SUB:
 			return `${when} SUB ${team} ${e.player}>${e.playerOn}`;
 		case BIN:

@@ -33,7 +33,7 @@ match = {
   config:  { periods: 2, periodMinutes: 45, sinBinMinutes: 10, breakMinutes: 10 },
   period:  1,
   clock:   { periodStartedAt, pausedTotal, pausedAt, breakStartedAt },
-  events:  [ { t, type, team, player, reason } ],
+  events:  [ { t, type, team, reason } ],          // player only on sub/bin
   sinBins: [ { team, player, wakeupId, returnAt } ]
 }
 ```
@@ -105,8 +105,8 @@ in a menu. Recognizers available: `single`, `long`, `multi`, `raw`.
 |-------------|------------------------------|
 | SELECT      | Pause / resume               |
 | SELECT long | Action menu                  |
-| UP          | Goal → team → scorer         |
-| DOWN        | Card → team → player → reason|
+| UP          | Goal → team                  |
+| DOWN        | Card → team → reason         |
 | BACK        | End period / abandon         |
 
 BACK is a plain press rather than a hold, because a hold is not available: the
@@ -116,6 +116,10 @@ opens a confirm screen defaulting to No, which is what a hold was guarding
 against anyway. BACK has no other job on this screen.
 
 In every picker: UP/DOWN move, SELECT confirm, BACK cancel.
+
+Goals and cards do not ask for a shirt number: numbers run high, and cycling
+one up costs more attention than a referee has while the clock runs. Subs and
+sin bins still ask, because both need to know which player.
 
 The player-number picker uses `SingleRecognizerOptions.repeat` so holding
 scrolls 0–99 at speed.
@@ -128,7 +132,7 @@ Action menu: `Goal · Card · Sub · Sin bin · Undo last · End period · Aband
 2. Clock (main)
 3. Action menu
 4. Team picker
-5. Player number picker
+5. Player number picker (sub, sin bin)
 6. Reason picker
 7. Sin-bin status
 8. Match summary
