@@ -100,7 +100,13 @@ function fragment() {
 
 Pebble.addEventListener("showConfiguration", function () {
   try {
-    Pebble.openURL(CONFIG_URL + "#" + fragment());
+    var url = CONFIG_URL + "#" + fragment();
+    // Logged because a settings page that never opens looks identical from the
+    // phone to one the app never asked for: this line is what tells the two
+    // apart, and `pebble logs` is the only place either is visible.
+    console.log("ref-match: opening settings, " + history().length +
+      " matches, url " + url.length + " chars");
+    Pebble.openURL(url);
   } catch (err) {
     console.log("ref-match: could not open settings - " + err);
   }
