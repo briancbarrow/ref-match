@@ -9,7 +9,7 @@
 // published anywhere that serves files over https. The match log travels in
 // the URL fragment, which the browser does not send to the server, so the host
 // only ever serves the page and never sees a match.
-var CONFIG_URL = "https://briancbarrow.github.io/ref-match/";
+var CONFIG_URL = "https://briancbarrow.github.io/ref-match/config/";
 
 var chunks = [];
 var expected = 0;
