@@ -115,8 +115,11 @@ Pebble.addEventListener("showConfiguration", function () {
 Pebble.addEventListener("webviewclosed", function (e) {
   // The page returns nothing at all when it is simply dismissed.
   if (!e || !e.response) {
+    console.log("ref-match: settings closed with no response");
     return;
   }
+
+  console.log("ref-match: settings returned " + e.response);
 
   // Some phone apps hand back the fragment already decoded and some do not,
   // so try it raw before decoding rather than depending on which.

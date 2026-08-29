@@ -287,9 +287,32 @@ function toast(text) {
 	}, 1800);
 }
 
-function close(response) {
-	// pebblejs://close is how a settings page hands data back to the app.
-	window.location = "pebblejs://close#" + encodeURIComponent(JSON.stringify(response || {}));
+// pebblejs://close is the only channel back to the app, and it only carries
+// anything if the page closes through it — backing out of the webview delivers
+// nothing. Assigning location works in most webviews and a few only follow the
+// same URL from a real link, so try both before admitting it did not work.
+function close(response, onStuck) {
+	var target = "pebblejs://close#" + encodeURIComponent(JSON.stringify(response || {}));
+
+	try {
+		window.location.href = target;
+	}
+	catch (err) {
+		// Some webviews throw on an unknown scheme instead of ignoring it.
+	}
+
+	setTimeout(function () {
+		var a = document.createElement("a");
+		a.href = target;
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+	}, 200);
+
+	// Still here means neither route closed the page, so nothing was handed
+	// back. Say so rather than leaving a tap that looks like it worked.
+	if (onStuck)
+		setTimeout(onStuck, 1200);
 }
 
 function filename() {
@@ -358,10 +381,36 @@ function copy() {
 	fallbackCopy();
 }
 
+// Deliberately not window.confirm: an in-app webview may refuse the dialog and
+// return false without showing anything, which makes the button look dead. Two
+// taps on the button itself cannot be suppressed by the host.
+var armed = false;
+var armedTimer;
+
 function clearHistory() {
-	if (!window.confirm("Delete all " + reports.length + " stored matches from the phone?"))
+	var button = document.getElementById("clear");
+
+	if (!armed) {
+		armed = true;
+		button.textContent = "Tap again to delete " + reports.length +
+			(1 === reports.length ? " match" : " matches");
+		armedTimer = setTimeout(function () {
+			armed = false;
+			button.textContent = "Clear history";
+		}, 5000);
 		return;
-	close({ clear: true });
+	}
+
+	clearTimeout(armedTimer);
+	armed = false;
+	button.textContent = "Clearing…";
+	button.disabled = true;
+
+	close({ clear: true }, function () {
+		button.disabled = false;
+		button.textContent = "Clear history";
+		subEl.textContent = "Could not reach the app — history not cleared.";
+	});
 }
 
 function start() {
