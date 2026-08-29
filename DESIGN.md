@@ -201,6 +201,17 @@ Match summary over AppMessage (`pebble/message`) to PebbleKit JS. Watch holds
 the match; the phone holds history. Nothing on the watch depends on the phone
 being present.
 
+The history leaves the phone through the settings page (`config/index.html`),
+which renders the stored reports as markdown and saves a `.md` through the
+phone's share sheet. The reports reach the page in the URL fragment rather than
+through an upload: a fragment is not sent to the server, so the export needs no
+backend, no account and no trust in whoever hosts the page. Both ends carry a
+hand-written base64url codec because neither runtime has `btoa`.
+
+The page decodes the single-letter event types itself. That is a duplicated
+constant — the numbering in `match.js` is the source of truth, and a change
+there has to be mirrored in the page's `describe()`.
+
 ## Open questions
 
 - Period length presets vs. free entry — youth matches vary a lot.

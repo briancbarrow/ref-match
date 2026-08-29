@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ref Match — match log</title>
+<style>
+	:root {
+		color-scheme: light dark;
+		--bg: #fbfaf8;
+		--fg: #1b1a17;
+		--muted: #6a675f;
+		--line: #dcd8d0;
+		--card: #fff;
+		--accent: #b4451f;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root {
+			--bg: #171614;
+			--fg: #eceae5;
+			--muted: #9a958a;
+			--line: #33312c;
+			--card: #201f1c;
+			--accent: #e2703f;
+		}
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0;
+		padding: 20px 16px 40px;
+		background: var(--bg);
+		color: var(--fg);
+		font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+	}
+	h1 {
+		margin: 0 0 2px;
+		font-size: 20px;
+		letter-spacing: -0.01em;
+	}
+	.sub {
+		margin: 0 0 18px;
+		color: var(--muted);
+		font-size: 14px;
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin-bottom: 18px;
+	}
+	button {
+		flex: 1 1 auto;
+		min-height: 44px;
+		padding: 0 16px;
+		border: 1px solid var(--line);
+		border-radius: 10px;
+		background: var(--card);
+		color: var(--fg);
+		font: inherit;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	button.primary {
+		background: var(--accent);
+		border-color: var(--accent);
+		color: #fff;
+	}
+	button.danger {
+		color: var(--accent);
+	}
+	pre {
+		margin: 0;
+		padding: 14px;
+		border: 1px solid var(--line);
+		border-radius: 10px;
+		background: var(--card);
+		overflow-x: auto;
+		white-space: pre;
+		font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	}
+	.empty {
+		padding: 28px 16px;
+		border: 1px dashed var(--line);
+		border-radius: 10px;
+		color: var(--muted);
+		text-align: center;
+	}
+	.toast {
+		position: fixed;
+		left: 50%;
+		bottom: 24px;
+		transform: translateX(-50%);
+		padding: 10px 18px;
+		border-radius: 999px;
+		background: var(--fg);
+		color: var(--bg);
+		font-size: 14px;
+		opacity: 0;
+		transition: opacity 0.2s;
+		pointer-events: none;
+	}
+	.toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<h1>Ref Match</h1>
+<p class="sub" id="sub">Reading match log…</p>
+
+<div class="actions" id="actions" hidden>
+	<button class="primary" id="save">Save .md</button>
+	<button id="copy">Copy</button>
+	<button class="danger" id="clear">Clear history</button>
+</div>
+
+<pre id="preview"></pre>
+<div class="empty" id="empty" hidden>
+	No matches stored yet.<br>Send one from the watch: match summary → SELECT → Send to phone.
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// Renders the match reports the watch sent to the phone as markdown, and hands
+// the file to the referee. The reports arrive in the URL fragment, which a
+// browser never puts on the wire: whoever hosts this page never sees a match.
+//
+// Event shape comes from report() in src/embeddedjs/match.js. The single-letter
+// type codes and the card-kind index are that file's constants — change them
+// there and this table has to follow.
+"use strict";
+
+var TEAM_NAMES = ["HOME", "AWAY"];
+var CARD_KINDS = ["Yellow", "Second yellow", "Red"];
+
+function team(i) {
+	return TEAM_NAMES[i] || "?";
+}
+
+// Referees count the minute in progress: 0:05 is the 1st minute.
+function minute(seconds) {
+	return Math.floor((seconds || 0) / 60) + 1;
+}
+
+// Goals and cards carry no shirt number. Reports written by an older build do,
+// so print one wherever it exists rather than dropping what was entered.
+function shirt(player) {
+	return undefined === player || null === player ? "" : " #" + player;
+}
+
+function describe(e) {
+	switch (e.type) {
+		case "G": return "Goal — " + team(e.team) + shirt(e.player);
+		case "C": return (CARD_KINDS[e.kind] || "Card") + " — " + team(e.team) + shirt(e.player);
+		case "S": return "Sub — " + team(e.team) + " #" + e.player + " off, #" + e.playerOn + " on";
+		case "B": return "Sin bin — " + team(e.team) + shirt(e.player) +
+			(e.minutes ? " (" + e.minutes + " min)" : "");
+		case "P": return "End of period " + e.p;
+		default: return "Unknown event";
+	}
+}
+
+function pad(n) {
+	return n < 10 ? "0" + n : "" + n;
+}
+
+function stamp(ms) {
+	var d = new Date(ms || Date.now());
+	return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+		" " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+
+function fileStamp(ms) {
+	var d = new Date(ms || Date.now());
+	return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+		"-" + pad(d.getHours()) + pad(d.getMinutes());
+}
+
+function matchMarkdown(r) {
+	var cfg = r.config || {};
+	var score = r.score || { home: 0, away: 0 };
+	var lines = [];
+
+	lines.push("## " + stamp(r.at));
+	lines.push("");
+	lines.push("**" + TEAM_NAMES[0] + " " + score.home + " – " + score.away + " " + TEAM_NAMES[1] + "**" +
+		(r.abandoned ? " — abandoned" : ""));
+	lines.push("");
+	lines.push("- Format: " + (cfg.periods || "?") + " × " + (cfg.periodMinutes || "?") + " min");
+	lines.push("- Periods played: " + (r.periodsPlayed || "?"));
+	if (cfg.sinBinMinutes)
+		lines.push("- Sin bin: " + cfg.sinBinMinutes + " min");
+	lines.push("");
+
+	var events = r.events || [];
+	if (!events.length) {
+		lines.push("_No events recorded._");
+		return lines.join("\n");
+	}
+
+	lines.push("| Min | Period | Event |");
+	lines.push("|----:|:------:|-------|");
+	for (var i = 0; i < events.length; i++) {
+		var e = events[i];
+		lines.push("| " + minute(e.t) + "' | " + (e.p || 1) + " | " + describe(e) + " |");
+	}
+	return lines.join("\n");
+}
+
+function buildMarkdown(reports) {
+	// Newest first: the match just refereed is the one this page was opened for.
+	var ordered = reports.slice().sort(function (a, b) {
+		return (b.at || 0) - (a.at || 0);
+	});
+	var out = ["# Ref Match log", "",
+		ordered.length + (1 === ordered.length ? " match" : " matches") +
+		", exported " + stamp(Date.now()), ""];
+	for (var i = 0; i < ordered.length; i++) {
+		out.push(matchMarkdown(ordered[i]));
+		out.push("");
+		if (i < ordered.length - 1) {
+			out.push("---");
+			out.push("");
+		}
+	}
+	return out.join("\n");
+}
+
+// --- Transport ------------------------------------------------------------
+
+// base64url, decoded by hand: the watch side has no btoa either, so both ends
+// carry their own. Percent-encoding the raw JSON would roughly double a URL
+// that already holds fifty matches.
+var ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+function fromBase64url(s) {
+	var bytes = [];
+	var buffer = 0;
+	var bits = 0;
+	for (var i = 0; i < s.length; i++) {
+		var value = ALPHABET.indexOf(s.charAt(i));
+		if (value < 0)
+			continue;
+		buffer = (buffer * 64) + value;
+		bits += 6;
+		if (bits >= 8) {
+			bits -= 8;
+			var divisor = Math.pow(2, bits);
+			bytes.push(Math.floor(buffer / divisor) & 0xff);
+			buffer = buffer % divisor;
+		}
+	}
+	return bytes;
+}
+
+function utf8Decode(bytes) {
+	var s = "";
+	for (var i = 0; i < bytes.length; i++)
+		s += "%" + (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16);
+	return decodeURIComponent(s);
+}
+
+function readReports() {
+	var hash = window.location.hash.replace(/^#/, "");
+	if (!hash)
+		return [];
+	var parsed = JSON.parse(utf8Decode(fromBase64url(hash)));
+	return Array.isArray(parsed) ? parsed : [];
+}
+
+// --- Page -----------------------------------------------------------------
+
+var reports = [];
+var markdown = "";
+
+var subEl = document.getElementById("sub");
+var actionsEl = document.getElementById("actions");
+var previewEl = document.getElementById("preview");
+var emptyEl = document.getElementById("empty");
+var toastEl = document.getElementById("toast");
+
+function toast(text) {
+	toastEl.textContent = text;
+	toastEl.classList.add("show");
+	setTimeout(function () {
+		toastEl.classList.remove("show");
+	}, 1800);
+}
+
+function close(response) {
+	// pebblejs://close is how a settings page hands data back to the app.
+	window.location = "pebblejs://close#" + encodeURIComponent(JSON.stringify(response || {}));
+}
+
+function filename() {
+	return "ref-match-" + fileStamp(Date.now()) + ".md";
+}
+
+function save() {
+	var name = filename();
+
+	// Share first where it exists: inside a phone webview it is the only route
+	// that reliably reaches Files, Drive or a mail draft. A plain download is
+	// the fallback, and an iOS webview sometimes ignores that too — hence Copy.
+	if (navigator.canShare && navigator.share) {
+		try {
+			var shared = new File([markdown], name, { type: "text/markdown" });
+			if (navigator.canShare({ files: [shared] })) {
+				navigator.share({ files: [shared], title: "Ref Match log" }).catch(function () {
+				});
+				return;
+			}
+		}
+		catch (err) {
+			// Fall through to the download.
+		}
+	}
+
+	var url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
+	var a = document.createElement("a");
+	a.href = url;
+	a.download = name;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+	setTimeout(function () {
+		URL.revokeObjectURL(url);
+	}, 10000);
+	toast("Saved " + name);
+}
+
+function fallbackCopy() {
+	var area = document.createElement("textarea");
+	area.value = markdown;
+	area.setAttribute("readonly", "");
+	area.style.position = "fixed";
+	area.style.opacity = "0";
+	document.body.appendChild(area);
+	area.select();
+	area.setSelectionRange(0, markdown.length);
+	try {
+		document.execCommand("copy");
+		toast("Copied");
+	}
+	catch (err) {
+		toast("Copy failed — select the text below");
+	}
+	document.body.removeChild(area);
+}
+
+function copy() {
+	if (navigator.clipboard && navigator.clipboard.writeText) {
+		navigator.clipboard.writeText(markdown).then(function () {
+			toast("Copied");
+		}, fallbackCopy);
+		return;
+	}
+	fallbackCopy();
+}
+
+function clearHistory() {
+	if (!window.confirm("Delete all " + reports.length + " stored matches from the phone?"))
+		return;
+	close({ clear: true });
+}
+
+function start() {
+	try {
+		reports = readReports();
+	}
+	catch (err) {
+		subEl.textContent = "Could not read the match log.";
+		previewEl.hidden = true;
+		emptyEl.hidden = false;
+		emptyEl.textContent = "The data from the watch did not parse: " + err;
+		return;
+	}
+
+	if (!reports.length) {
+		subEl.textContent = "Nothing stored on this phone.";
+		previewEl.hidden = true;
+		emptyEl.hidden = false;
+		return;
+	}
+
+	markdown = buildMarkdown(reports);
+	subEl.textContent = reports.length + (1 === reports.length ? " match" : " matches") + " stored";
+	previewEl.textContent = markdown;
+	actionsEl.hidden = false;
+
+	document.getElementById("save").addEventListener("click", save);
+	document.getElementById("copy").addEventListener("click", copy);
+	document.getElementById("clear").addEventListener("click", clearHistory);
+}
+
+start();
+</script>
+
+</body>
+</html>
